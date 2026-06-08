@@ -19,7 +19,7 @@ def parse_intent(state: OrchestratorState) -> dict:
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     structured_llm = llm.with_structured_output(list[HotelIntent | FlightIntent])
     system_prompt: str = INTENT_PARSER_SYSTEM_PROMPT
-    invalid_active_intents = [intent for intent in  state["intents"] if intent.active and intent.status == IntentStatus.INVALID]
+    invalid_active_intents = [intent for intent in  state.get("intents", []) if intent.active and intent.status == IntentStatus.INVALID]
     if invalid_active_intents:
         system_prompt += "### PREVIOUS UNFILLED INTENTS ###\n"
         for ints in invalid_active_intents:
@@ -35,7 +35,7 @@ def parse_intent(state: OrchestratorState) -> dict:
     return {"intents": intents}
 
 def validate_unprocessed_intents(state: OrchestratorState) -> dict:
-    for intent in state["intents"]:
+    for intent in state.get("intents", []):
         if intent.status in [IntentStatus.NEW, IntentStatus.MODIFIED]:
             intent.missing_info = []
             fields_to_look_for: list[str] = REQUIRED_FIELDS_BY_INTENT[intent.intent_type]
@@ -44,43 +44,81 @@ def validate_unprocessed_intents(state: OrchestratorState) -> dict:
                 if getattr(intent, field, None) is None:
                     intent.missing_info.append(field)
             intent.status = IntentStatus.INVALID if intent.missing_info else IntentStatus.VALID
-    return {"intents": state["intents"]}
+    return {"intents": state.get("intents", [])}
 
-def delegate_to_agents(state: OrchestratorState):
-    """Translates the extracted parameters into A2A requests and calls sub-agents."""
 
-    #Fetch active intents that are valid and delegate them to agents
-    valid_intents: dict[IntentType, HotelIntent|FlightIntent] = {intent.intent_type:intent for intent in state["intents"] if intent.status == IntentStatus.VALID and intent.active}
+def call_flight_agent(state: OrchestratorState):
+    """Explicit node for Flight Agent delegation."""
+    return _invoke_agent(state, IntentType.FLIGHT)
+
+
+def call_hotel_agent(state: OrchestratorState):
+    """Explicit node for Hotel Agent delegation."""
+    return _invoke_agent(state, IntentType.HOTEL)
+
+
+def _invoke_agent(state: OrchestratorState, target_intent_type: IntentType):
+    """Helper function to handle the A2A protocol and status updates."""
+    valid_intents = [i for i in state.get("intents", []) if
+                     i.status == IntentStatus.VALID and i.active and i.intent_type == target_intent_type]
+
     new_agent_responses = {}
-    for intent_type, intent in valid_intents.items():
 
-        if intent_type not in AGENT_REGISTRY or intent_type not in valid_intents:
-            continue
-
-        agent_config = AGENT_REGISTRY[intent_type]
+    for intent in valid_intents:
+        agent_config = AGENT_REGISTRY[target_intent_type]
         task_id = str(uuid.uuid4())
 
-        # Build strict A2A Request
+        # Build A2A Request
         req_payload = {
             "task_id": task_id,
-            "session_id": state["session_id"],
+            "session_id": state.get("session_id", str(uuid.uuid4())),
             "task_type": agent_config["task_type"],
             "parameters": intent.model_dump(exclude=INTENT_META_DATA_FIELDS)
         }
 
-        # Invoke the graph dynamically from the registry
+        # Invoke the sub-graph
         result = agent_config["graph"].invoke({"request": req_payload})
+        response_data = result.get("response", {})
+        status = response_data.get("status")
+        if status in ["failed", "needs_clarification"]:
+            intent.status = IntentStatus.INVALID
+            # Save the error so the LLM knows what to ask the user
+            error_msg = response_data.get("clarification_needed") or response_data.get("error") or "Unknown error."
+            if error_msg not in intent.missing_info:
+                intent.missing_info.append(f"Agent Error: {error_msg}")
 
-        # Create AgentTask record
+        # Record the task
         new_agent_responses[task_id] = AgentTask(
             task_id=task_id,
             agent_name=agent_config["name"],
             agent_request=json.dumps(req_payload),
-            agent_response=json.dumps(result.get("response", {}))
+            agent_response=json.dumps(response_data),
+            processed=False
         )
 
-    return {"agent_responses": new_agent_responses}
+    return {"agent_responses": new_agent_responses, "intents": state.get("intents", [])}
 
+def delegate_to_agents(state: OrchestratorState) -> list[str]:
+    """
+    Returns a list of nodes to execute in parallel.
+    Routes to Flight, Hotel, Both, or Neither!
+    """
+    routes = []
+    for intent in state.get("intents", []):
+        if intent.status == IntentStatus.VALID and intent.active:
+            if intent.intent_type == IntentType.FLIGHT:
+                routes.append("call_flight_agent")
+            elif intent.intent_type == IntentType.HOTEL:
+                routes.append("call_hotel_agent")
+
+    # Deduplicate in case there are multiple of the same type
+    routes = list(set(routes))
+
+    # If no valid active intents, go straight to chatting (Neither)
+    if not routes:
+        return ["generate_response"]
+
+    return routes
 
 def generate_response(state: OrchestratorState) -> dict[str, Any]:
     """Generates the final conversational response based on valid agent executions and missing info."""
@@ -123,19 +161,12 @@ def generate_response(state: OrchestratorState) -> dict[str, Any]:
     }
 
 
-def route_after_parsing(state: OrchestratorState):
-    """Determines whether to trigger sub-agents or reply directly to the user."""
-    intent = [intent for intent in state["intents"] if intent.status == IntentStatus.VALID and intent.active]
-    if intent:
-        return "delegate"
-    return "generate_response"
-
-
 workflow = StateGraph(state_schema=OrchestratorState) #type:ignore
 
 workflow.add_node("parse", parse_intent) #type:ignore
 workflow.add_node("validate", validate_unprocessed_intents) #type:ignore
-workflow.add_node("delegate", delegate_to_agents) #type:ignore
+workflow.add_node("call_flight_agent", call_flight_agent) #type:ignore
+workflow.add_node("call_hotel_agent", call_hotel_agent) #type:ignore
 workflow.add_node("generate_response", generate_response) #type:ignore
 
 workflow.set_entry_point("parse")
@@ -144,16 +175,16 @@ workflow.add_edge("parse", "validate")
 
 workflow.add_conditional_edges(
     "validate",
-    route_after_parsing,
+    delegate_to_agents,
     {
-        "delegate": "delegate",
-        "generate_response": "generate_response"
+        "call_flight_agent": "call_flight_agent",
+        "generate_response": "generate_response",
+        "call_hotel_agent": "call_hotel_agent"
     }
 )
 
-workflow.add_edge("delegate", "generate_response")
+workflow.add_edge("call_flight_agent", "generate_response")
+workflow.add_edge("call_hotel_agent", "generate_response")
 workflow.add_edge("generate_response", END)
 
 orchestrator_graph = workflow.compile()
-
-print(orchestrator_graph.get_graph().draw_mermaid())

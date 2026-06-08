@@ -63,7 +63,7 @@ def format_response(state: HotelAgentState):
     elif not state.get("hotel_results"):
         response = A2ATaskResponse(
             task_id=task_id,
-            status="success",
+            status="needs_clarification",
             results=[],
             clarification_needed="No hotels found for the requested city and dates.",
             metadata=metadata
