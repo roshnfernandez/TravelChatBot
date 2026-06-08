@@ -3,8 +3,8 @@ from agents.hotel_agent.agent import hotel_agent_graph
 from orchestrator.enums import IntentType
 
 REQUIRED_FIELDS_BY_INTENT: dict[IntentType, list[str]] = {
-    IntentType.FLIGHT : ["origin","destination","departure_date"],
-    IntentType.HOTEL: ["destination_city","check_in_date","check_out_date"]
+    IntentType.FLIGHT: ["origin", "destination", "departure_date"],
+    IntentType.HOTEL: ["destination_city", "check_in_date", "check_out_date"]
 }
 
 AGENT_REGISTRY = {
@@ -22,4 +22,8 @@ AGENT_REGISTRY = {
 
 INTENT_META_DATA_FIELDS: set = {"intent_type", "active", "status", "missing_info", "created_on"}
 
-INTENTS_TO_LOAD: int = 3
+INTENTS_THRESHOLD: int = 2
+
+CHATS_TO_HOLD_IN_MEMORY: int = 6
+
+TASKS_TO_HOLD_IN_MEMORY: int = 4

@@ -9,6 +9,7 @@ class IntentStatus(Enum):
     PROCESSED_BY_AGENT = "processed_by_agent"
     CONFIRMED = "confirmed"
 
+
 class IntentType(Enum):
     FLIGHT = "flight"
     HOTEL = "hotel"

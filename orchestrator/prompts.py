@@ -1,4 +1,12 @@
-INTENT_PARSER_SYSTEM_PROMPT = """
+import json
+import logging
+
+from orchestrator.enums import IntentStatus
+from orchestrator.models import OrchestratorState
+
+logger = logging.getLogger(__name__)
+
+_INTENT_PARSER_SYSTEM_PROMPT = """
 You are the structural intent extraction engine for an enterprise travel assistant.
 Your strict job is to read the conversation history, analyze the user's active travel requests, and extract structured parameters.
 
@@ -78,7 +86,7 @@ You MUST return a JSON object containing a list of intents under the key "extrac
 - If the user is just chatting or asking a general question (e.g., "Is June a good time to visit Tokyo?") without requesting a booking, return an empty list for `extracted_intents`.
 """
 
-RESPONSE_GENERATOR_SYSTEM_PROMPT = """
+_RESPONSE_GENERATOR_SYSTEM_PROMPT = """
 You are the final conversational voice of an elite enterprise travel booking system. 
 Your job is to read the context blocks below and present them naturally to the user. You must follow a strict hierarchy of actions.
 
@@ -102,3 +110,98 @@ If, and ONLY if, an "AGENT RESULTS" block is provided but explicitly contains an
 ### CONTEXT
 """
 
+_SUMMARIZER_PROMPT = """
+Analyze the following conversation between a user and an assistant, and extract the following details:
+- Summary (str): Provide a concise summary of the session, focusing on important information that would be helpful for future interactions.
+- Topics (Optional[List[str]]): List the topics discussed in the session.
+Keep the summary concise and to the point. Only include relevant information.
+"""
+
+_TASK_RESPONSE_SUMMARIZER_PROMPT = """
+Analyze the following Agent responses, and extract the following details:
+- Summary (str): Provide a concise summary of the tasks, focusing on important information that would be helpful for future interactions.
+Keep the summary concise and to the point. Only include relevant information.
+"""
+
+def get_parse_intent_system_prompt(state: OrchestratorState) -> str:
+    system_prompt: str = _INTENT_PARSER_SYSTEM_PROMPT
+    invalid_active_intents = [intent for intent in state.get("intents", []) if
+                              intent.active and intent.status == IntentStatus.INVALID]
+    valid_active_intents = [intent for intent in state.get("intents", []) if
+                            intent.active and intent.status == IntentStatus.VALID]
+    if invalid_active_intents:
+        logger.debug(f"Injecting {len(invalid_active_intents)} invalid/incomplete intents into context.")
+        system_prompt += "### PREVIOUS UNFILLED INTENTS ###\n"
+        for ints in invalid_active_intents:
+            system_prompt += f"```json\n{ints.model_dump_json(exclude_none=True)}\n```\n"
+    if valid_active_intents:
+        logger.debug(f"Injecting {len(valid_active_intents)} valid intents into context.")
+        system_prompt += "### PREVIOUS VALID INTENTS ###\n"
+        for ints in valid_active_intents:
+            system_prompt += f"```json\n{ints.model_dump_json(exclude_none=True)}\n```\n"
+
+    all_tasks = list(state.get("agent_responses", {}).values())
+    # Sort to get the most recent tasks first, and grab the top 2
+    recent_tasks = sorted(all_tasks, key=lambda x: x.created_on, reverse=True)[:2]
+
+    if recent_tasks:
+        logger.debug(f"Injecting {len(recent_tasks)} recent agent payloads into context.")
+        system_prompt += "### RECENT AGENT SEARCH RESULTS (AVAILABLE FOR BOOKING) ###\n"
+        system_prompt += "Use these exact JSON blocks to populate the `booked_entity` if the user confirms a booking.\n"
+        for task in recent_tasks:
+            system_prompt += f"--- Agent: {task.agent_name} ---\n"
+            system_prompt += f"```json\n{task.agent_response}\n```\n\n"
+
+    return system_prompt
+
+
+def get_response_system_prompt(state: OrchestratorState) -> str:
+    system_prompt = _RESPONSE_GENERATOR_SYSTEM_PROMPT
+
+    # 1. Grab Missing Info
+    missing_details_context = []
+    for intent in state.get("intents", []):
+        if intent.active and intent.status == IntentStatus.INVALID:
+            missing_details_context.append(
+                f"- For {intent.intent_type}: Need {', '.join(intent.missing_info)}"
+            )
+
+    # 2. Grab Agent Results
+    agent_results = [json.loads(task.agent_response) for task in state.get("agent_responses", {}).values() if
+                     not task.processed]
+
+    # 3. Grab Newly Confirmed Bookings
+    confirmed_bookings = [
+        intent for intent in state.get("intents", [])
+        if intent.status == IntentStatus.CONFIRMED and not getattr(intent, "acknowledged", False)
+    ]
+
+    logger.debug(
+        f"Formatting {len(agent_results)} agent results, {len(missing_details_context)} clarification points, and {len(confirmed_bookings)} confirmations.")
+
+    if confirmed_bookings:
+        system_prompt += "### RECENTLY CONFIRMED BOOKINGS ###\n"
+        system_prompt += "The user has officially booked the following items. Enthusiastically confirm the booking, provide their booking reference (PNR), and summarize the details from the booked_entity.\n"
+        for booking in confirmed_bookings:
+            entity_str = json.dumps(booking.booked_entity) if booking.booked_entity else "{}"
+            system_prompt += f"- {booking.intent_type.value.upper()} ({booking.intent_id}) | Ref: {getattr(booking, 'booking_reference', 'PENDING')} | Details: {entity_str}\n"
+
+    if agent_results:
+        system_prompt += "### AGENT RESULTS (Format these nicely for the user) ###\n"
+        system_prompt += f"{json.dumps(agent_results)}\n\n"
+
+    if missing_details_context:
+        system_prompt += "### MISSING INFORMATION (Politely ask the user for these specific details) ###\n"
+        system_prompt += "\n".join(missing_details_context) + "\n\n"
+
+    if not agent_results and not missing_details_context and not confirmed_bookings:
+        system_prompt += "No active searches or bookings right now. Just chat nicely with the user!"
+
+    return system_prompt
+
+
+def get_summarizer_system_prompt() -> str:
+    return _SUMMARIZER_PROMPT
+
+def get_task_summarizer_system_prompt() -> str:
+    return _TASK_RESPONSE_SUMMARIZER_PROMPT

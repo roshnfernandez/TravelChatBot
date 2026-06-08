@@ -1,14 +1,15 @@
 from datetime import datetime
-from typing_extensions import TypedDict
-from typing import Optional, Annotated, Literal, Any
+from typing import Optional, Any, Annotated
 
 from langgraph.graph import add_messages
+from typing_extensions import TypedDict
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agents.flight_agent.schemas import FlightDetails
 from agents.hotel_agent.schemas import HotelDetails
 from orchestrator.enums import IntentStatus, IntentType
-from orchestrator.util import merge_intents
+from orchestrator.util import merge_intents, merge_agent_responses
 
 
 class Intent(BaseModel):
@@ -52,6 +53,7 @@ class FlightIntent(Intent):
             raise ValueError("intent_type must be FLIGHT")
         return v
 
+
 class HotelIntent(Intent):
     intent_type: IntentType = IntentType.HOTEL
     destination_city: Optional[str] = Field(None, description="The destination city.")
@@ -68,6 +70,7 @@ class HotelIntent(Intent):
             raise ValueError("intent_type must be HOTEL")
         return v
 
+
 class AgentTask(BaseModel):
     task_id: str = Field(..., description="The task id.")
     agent_name: str = Field(..., description="The agent name.")
@@ -76,11 +79,18 @@ class AgentTask(BaseModel):
     created_on: datetime = Field(default_factory=datetime.now, description="The datetime the task was created.")
     processed: bool = Field(False, description="Whether the task was processed.")
 
+
 class IntentExtraction(BaseModel):
     extracted_intents: list[FlightIntent | HotelIntent]
+
+class SessionSummary(BaseModel):
+    summary: str = Field(..., description="The summary of messages in the session.")
+    topics: list[str] = Field(default_factory=list, description= "The list of topics in the session.")
 
 class OrchestratorState(TypedDict):
     messages: Annotated[list, add_messages]
     session_id: str
+    summary: Optional[SessionSummary]
+    task_responses_summary: Optional[str]
     intents: Annotated[list[HotelIntent | FlightIntent], merge_intents]
-    agent_responses: dict[str, AgentTask]
+    agent_responses: Annotated[dict[str, AgentTask], merge_agent_responses]

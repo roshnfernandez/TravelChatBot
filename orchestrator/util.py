@@ -1,7 +1,11 @@
+import logging
 import random
 import string
 
+from orchestrator.const import AGENT_REGISTRY, CHATS_TO_HOLD_IN_MEMORY, TASKS_TO_HOLD_IN_MEMORY
 from orchestrator.enums import IntentStatus, IntentType
+
+logger = logging.getLogger(__name__)
 
 
 def generate_short_id(intent_type: IntentType) -> str:
@@ -10,11 +14,12 @@ def generate_short_id(intent_type: IntentType) -> str:
     chars = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
     return f"{prefix}-{chars}"
 
+
 def merge_intents(existing_intents: list, new_intents: list):
     """
         Strictly merges based on the intent_id explicitly targeted by the LLM.
     """
-    #No history, so assign IDs to all new intents
+    # No history, so assign IDs to all new intents
     if not existing_intents:
         for intent in new_intents:
             if not getattr(intent, 'intent_id', None):
@@ -29,7 +34,6 @@ def merge_intents(existing_intents: list, new_intents: list):
 
     # 2. Process updates from the LLM
     for new_intent in new_intents:
-
         # Condition A: The LLM explicitly targeted an existing ID
         if new_intent.intent_id and new_intent.intent_id in merged_state:
             existing = merged_state[new_intent.intent_id]
@@ -37,6 +41,7 @@ def merge_intents(existing_intents: list, new_intents: list):
             # Handle user changing topics (canceling an intent)
             if not new_intent.active:
                 existing.active = False
+                merged_state.pop(existing.intent_id, None)
                 continue
 
             # Merge fields safely (only updating what the LLM newly extracted)
@@ -46,10 +51,65 @@ def merge_intents(existing_intents: list, new_intents: list):
                     setattr(existing, k, v)
 
         # Condition B: It's a completely new request (or the LLM hallucinated a bad ID)
-        else:
+        elif new_intent.active:
             # Force a fresh, valid system ID
             new_intent.intent_id = generate_short_id(new_intent.intent_type)
             merged_state[new_intent.intent_id] = new_intent
 
     # Return the dictionary back as a list for LangGraph
     return list(merged_state.values())
+
+
+def merge_agent_responses(existing: dict, new: dict) -> dict:
+    """Merges incoming agent responses into the existing state dictionary."""
+    if not existing:
+        # If no existing state, just filter out any Nones from the new payload
+        return {k: v for k, v in new.items() if v is not None}
+
+    if not new:
+        return existing
+
+    merged = existing.copy()
+    for key, value in new.items():
+        # --- THE DELETION PROTOCOL ---
+        if value is None:
+            merged.pop(key, None)  # Physically remove the old task
+        else:
+            merged[key] = value
+
+    return merged
+
+def delegate_to_agents(state) -> list[str]:
+    """
+    Returns a list of nodes to execute in parallel.
+    Routes to Flight, Hotel, Both, or Neither
+    """
+    routes = []
+    for intent in state.get("intents", []):
+        if intent.status == IntentStatus.VALID and intent.active:
+            if intent.intent_type in AGENT_REGISTRY:
+                routes.append(AGENT_REGISTRY[intent.intent_type]["name"])
+
+    routes = list(set(routes))
+
+    if not routes:
+        logger.info("ROUTER: No valid agents to call. Routing to generate_response.")
+        return ["generate_response"]
+
+    logger.info(f"ROUTER: Delegating to agents -> {routes}")
+    return routes
+
+def route_to_summarizers(state) -> list[str]:
+    """
+    Returns a list of nodes to execute in parallel.
+    Routes to Session Summarizer, Task Summarizer, Both, or Neither
+    """
+    routes = ["remove_old_intents"]
+    if len(state.get("messages", [])) > CHATS_TO_HOLD_IN_MEMORY:
+        routes.append("summarize_session")
+
+    if len(state.get("agent_responses", {})) > TASKS_TO_HOLD_IN_MEMORY:
+        routes.append("summarize_tasks")
+
+    return routes
+
