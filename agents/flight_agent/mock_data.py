@@ -6,8 +6,8 @@ MOCK_FLIGHT_DB = [
     {
         "flight_number": "JL712",
         "airline": "Japan Airlines",
-        "origin": "SIN",
-        "destination": "TYO",
+        "origin": "SINGAPORE",
+        "destination": "TOKYO",
         "departure_time": "08:15",
         "arrival_time": "16:10",
         "price_usd": 450,
@@ -16,8 +16,8 @@ MOCK_FLIGHT_DB = [
     {
         "flight_number": "SQ638",
         "airline": "Singapore Airlines",
-        "origin": "SIN",
-        "destination": "TYO",
+        "origin": "SINGAPORE",
+        "destination": "TOKYO",
         "departure_time": "23:55",
         "arrival_time": "08:00 (+1)",
         "price_usd": 520,
@@ -26,8 +26,8 @@ MOCK_FLIGHT_DB = [
     {
         "flight_number": "NH802",
         "airline": "ANA",
-        "origin": "SIN",
-        "destination": "TYO",
+        "origin": "SINGAPORE",
+        "destination": "TOKYO",
         "departure_time": "06:30",
         "arrival_time": "14:20",
         "price_usd": 480,

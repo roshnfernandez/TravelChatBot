@@ -11,6 +11,8 @@ You will be provided with a list of the user's currently active, incomplete trav
    - Output the exact `intent_id`.
    - Set the `status` to "confirmed".
    - Locate the user's choice inside the "RECENT AGENT SEARCH RESULTS" section below. Extract that exact JSON object and assign it entirely to the `booked_entity` dictionary. Do not miss any fields (e.g., total_price_usd, return_date, etc.).
+5. IGNORE COMPLETED BOOKINGS: If the chat history shows the assistant has already confirmed a booking (e.g., provided a PNR), DO NOT extract or output that item again. It is securely saved in the system. Only extract currently active or brand new requests.
+6. "FOR THE SAME" INFERENCE: If the user asks for a new service for a previously booked trip (e.g., "book a flight for the same"), you MUST output a BRAND NEW intent for the requested service (e.g., flight). Inherit the dates, cities, and locations from the chat history, but absolutely DO NOT output the old confirmed intent.
 
 ### SHARED CONTEXT RULE
 If the user requests both a flight and a hotel for a trip, automatically apply the inferred dates and locations to BOTH intents. (e.g., Use the flight's destination as the hotel's destination_city. Use the flight's departure_date as the hotel's check_in_date, and the return_date as the check_out_date).
@@ -57,11 +59,14 @@ You MUST return a JSON object containing a list of intents under the key "extrac
   "number_of_guests": integer (default 1),
   "room_type_preference": "string or null",
   "location_preferences": "string or null",
-  "booked_entity": { // ONLY populate if status is "confirmed". Leave empty {} otherwise.
-      "hotel_name": "string",
+  "booked_entity": { // ONLY populate if status is "confirmed". Leave as null otherwise.
+      "hotel_id": "string",
+      "name": "string",
       "city": "string",
-      "room_type": "string",
+      "neighborhood": "string",
+      "star_rating": integer,
       "price_per_night_usd": number,
+      "amenities": ["string"],
       "check_in_date": "YYYY-MM-DD",
       "check_out_date": "YYYY-MM-DD",
       "total_price_usd": number

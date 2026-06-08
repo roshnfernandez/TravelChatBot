@@ -145,7 +145,6 @@ def delegate_to_agents(state: OrchestratorState) -> list[str]:
     routes = []
     for intent in state.get("intents", []):
         if intent.status == IntentStatus.VALID and intent.active:
-            logger.info("Intent Type is {}", intent.intent_type)
             if intent.intent_type in AGENT_REGISTRY:
                 routes.append(AGENT_REGISTRY[intent.intent_type]["name"])
 

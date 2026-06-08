@@ -6,6 +6,7 @@ from langgraph.graph import add_messages
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from agents.flight_agent.schemas import FlightDetails
+from agents.hotel_agent.schemas import HotelDetails
 from orchestrator.enums import IntentStatus, IntentType
 from orchestrator.util import merge_intents
 
@@ -16,7 +17,7 @@ class Intent(BaseModel):
     status: IntentStatus = Field(IntentStatus.NEW, description="The intent status")
     missing_info: list[str] = Field(default_factory=list, description="List of missing information.")
     created_on: datetime = Field(default_factory=datetime.now, description="The date the intent was created.")
-    booked_entity: Optional[FlightDetails] = Field(None, description="The booked entity.")
+    booked_entity: Optional[FlightDetails | HotelDetails] = Field(None, description="The booked entity.")
     acknowledged: bool = Field(False, description="Whether the booking is acknowledged.")
 
     @model_validator(mode='before')

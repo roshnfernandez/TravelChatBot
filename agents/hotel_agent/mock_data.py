@@ -1,4 +1,7 @@
-from typing import List, Dict, Any, Optional
+from datetime import datetime
+from typing import List, Optional
+
+from agents.hotel_agent.schemas import HotelDetails
 
 MOCK_HOTEL_DB = [
     {
@@ -38,20 +41,35 @@ def search_hotels(
         number_of_guests: int = 1,
         room_type_preference: Optional[str] = None,
         location_preferences: Optional[str] = None
-) -> List[Dict[str, Any]]:
+) -> List[HotelDetails]:
+    """
+        Simulates querying a hotel database and calculates stay totals.
+        """
     results = []
+
+    try:
+        in_date = datetime.strptime(check_in_date, "%Y-%m-%d")
+        out_date = datetime.strptime(check_out_date, "%Y-%m-%d")
+        nights = (out_date - in_date).days
+        nights = max(1, nights)  # Fallback to 1 night if dates are same-day
+    except ValueError:
+        nights = 1  # Safe fallback if the LLM passes weird date strings
+
     for hotel in MOCK_HOTEL_DB:
         if hotel["city"].lower() == destination_city.lower():
 
-            # If a location preference is provided, prioritize it
-            if location_preferences and location_preferences.lower() in hotel["neighborhood"].lower():
-                results.insert(0, hotel)
-            else:
-                results.append(hotel)
+            # Create the data payload
+            booked_hotel = hotel.copy()
+            booked_hotel["check_in_date"] = check_in_date
+            booked_hotel["check_out_date"] = check_out_date
+            booked_hotel["total_price_usd"] = str(float(hotel["price_per_night_usd"] * nights * number_of_guests))
 
-    # Calculate total price based on mock stay duration (simplified)
-    for res in results:
-        res["check_in"] = check_in_date
-        res["check_out"] = check_out_date
+            validated_result = HotelDetails(**booked_hotel)
+
+            # Prioritize location preferences
+            if location_preferences and location_preferences.lower() in hotel["neighborhood"].lower():
+                results.insert(0, validated_result)
+            else:
+                results.append(validated_result)
 
     return results
