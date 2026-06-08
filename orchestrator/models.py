@@ -1,10 +1,11 @@
 from datetime import datetime
 from typing_extensions import TypedDict
-from typing import Optional, Annotated, Literal
+from typing import Optional, Annotated, Literal, Any
 
 from langgraph.graph import add_messages
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
+from agents.flight_agent.schemas import FlightDetails
 from orchestrator.enums import IntentStatus, IntentType
 from orchestrator.util import merge_intents
 
@@ -15,6 +16,24 @@ class Intent(BaseModel):
     status: IntentStatus = Field(IntentStatus.NEW, description="The intent status")
     missing_info: list[str] = Field(default_factory=list, description="List of missing information.")
     created_on: datetime = Field(default_factory=datetime.now, description="The date the intent was created.")
+    booked_entity: Optional[FlightDetails] = Field(None, description="The booked entity.")
+    acknowledged: bool = Field(False, description="Whether the booking is acknowledged.")
+
+    @model_validator(mode='before')
+    @classmethod
+    def wipe_empty_dicts(cls, data: Any) -> Any:
+        # If the incoming payload is a dictionary, scrub it
+        if isinstance(data, dict):
+            cleaned_data = {}
+            for key, value in data.items():
+                # If the value is exactly an empty dict, convert to None
+                if value == {}:
+                    cleaned_data[key] = None
+                else:
+                    cleaned_data[key] = value
+            return cleaned_data
+        return data
+
 
 class FlightIntent(Intent):
     intent_type: IntentType = IntentType.FLIGHT

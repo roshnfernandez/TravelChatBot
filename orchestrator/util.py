@@ -42,11 +42,8 @@ def merge_intents(existing_intents: list, new_intents: list):
             # Merge fields safely (only updating what the LLM newly extracted)
             new_data = new_intent.model_dump(exclude_unset=True, exclude_none=True)
             for k, v in new_data.items():
-                if k not in ["created_on", "status", "missing_info", "intent_type", "intent_id"]:
+                if k not in ["created_on", "missing_info", "intent_type", "intent_id"]:
                     setattr(existing, k, v)
-
-            # Flag for validation to re-check
-            existing.status = IntentStatus.MODIFIED
 
         # Condition B: It's a completely new request (or the LLM hallucinated a bad ID)
         else:

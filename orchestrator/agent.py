@@ -1,4 +1,3 @@
-import copy
 import json
 import logging
 import uuid
@@ -22,11 +21,29 @@ def parse_intent(state: OrchestratorState) -> dict:
     structured_llm = llm.with_structured_output(IntentExtraction, method="function_calling")
     system_prompt: str = INTENT_PARSER_SYSTEM_PROMPT
     invalid_active_intents = [intent for intent in  state.get("intents", []) if intent.active and intent.status == IntentStatus.INVALID]
+    valid_active_intents = [intent for intent in state.get("intents", []) if intent.active and intent.status == IntentStatus.VALID]
     if invalid_active_intents:
         logger.debug(f"Injecting {len(invalid_active_intents)} invalid/incomplete intents into context.")
         system_prompt += "### PREVIOUS UNFILLED INTENTS ###\n"
         for ints in invalid_active_intents:
             system_prompt += f"```json\n{ints.model_dump_json(exclude_none=True)}\n```\n"
+    if valid_active_intents:
+        logger.debug(f"Injecting {len(valid_active_intents)} valid intents into context.")
+        system_prompt += "### PREVIOUS VALID INTENTS ###\n"
+        for ints in valid_active_intents:
+            system_prompt += f"```json\n{ints.model_dump_json(exclude_none=True)}\n```\n"
+
+    all_tasks = list(state.get("agent_responses", {}).values())
+    # Sort to get the most recent tasks first, and grab the top 2
+    recent_tasks = sorted(all_tasks, key=lambda x: x.created_on, reverse=True)[:2]
+
+    if recent_tasks:
+        logger.debug(f"Injecting {len(recent_tasks)} recent agent payloads into context.")
+        system_prompt += "### RECENT AGENT SEARCH RESULTS (AVAILABLE FOR BOOKING) ###\n"
+        system_prompt += "Use these exact JSON blocks to populate the `booked_entity` if the user confirms a booking.\n"
+        for task in recent_tasks:
+            system_prompt += f"--- Agent: {task.agent_name} ---\n"
+            system_prompt += f"```json\n{task.agent_response}\n```\n\n"
 
     messages = [SystemMessage(content=system_prompt)] + state["messages"]
     logger.debug("Invoking LLM for structured intent extraction...")
@@ -143,10 +160,13 @@ def delegate_to_agents(state: OrchestratorState) -> list[str]:
 
 
 def generate_response(state: OrchestratorState) -> dict[str, Any]:
-    """Generates the final conversational response based on valid agent executions and missing info."""
+    """Generates the final conversational response based on valid agent executions, missing info, and confirmed bookings."""
     logger.info("--- NODE: GENERATE RESPONSE ---")
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
 
+    system_prompt = RESPONSE_GENERATOR_SYSTEM_PROMPT
+
+    # 1. Grab Missing Info
     missing_details_context = []
     for intent in state.get("intents", []):
         if intent.active and intent.status == IntentStatus.INVALID:
@@ -154,12 +174,23 @@ def generate_response(state: OrchestratorState) -> dict[str, Any]:
                 f"- For {intent.intent_type}: Need {', '.join(intent.missing_info)}"
             )
 
+    # 2. Grab Agent Results
     agent_results = [json.loads(task.agent_response) for task in state.get("agent_responses", {}).values() if not task.processed]
 
-    logger.debug(
-        f"Formatting {len(agent_results)} agent results and {len(missing_details_context)} clarification points.")
+    # 3. Grab Newly Confirmed Bookings
+    confirmed_bookings = [
+        intent for intent in state.get("intents", [])
+        if intent.status == IntentStatus.CONFIRMED and not getattr(intent, "acknowledged", False)
+    ]
 
-    system_prompt = RESPONSE_GENERATOR_SYSTEM_PROMPT
+    logger.debug(f"Formatting {len(agent_results)} agent results, {len(missing_details_context)} clarification points, and {len(confirmed_bookings)} confirmations.")
+
+    if confirmed_bookings:
+        system_prompt += "### RECENTLY CONFIRMED BOOKINGS ###\n"
+        system_prompt += "The user has officially booked the following items. Enthusiastically confirm the booking, provide their booking reference (PNR), and summarize the details from the booked_entity.\n"
+        for booking in confirmed_bookings:
+            entity_str = json.dumps(booking.booked_entity) if booking.booked_entity else "{}"
+            system_prompt += f"- {booking.intent_type.value.upper()} ({booking.intent_id}) | Ref: {getattr(booking, 'booking_reference', 'PENDING')} | Details: {entity_str}\n"
 
     if agent_results:
         system_prompt += "### AGENT RESULTS (Format these nicely for the user) ###\n"
@@ -169,8 +200,8 @@ def generate_response(state: OrchestratorState) -> dict[str, Any]:
         system_prompt += "### MISSING INFORMATION (Politely ask the user for these specific details) ###\n"
         system_prompt += "\n".join(missing_details_context) + "\n\n"
 
-    if not agent_results and not missing_details_context:
-        system_prompt += "No active bookings right now. Just chat nicely with the user!"
+    if not agent_results and not missing_details_context and not confirmed_bookings:
+        system_prompt += "No active searches or bookings right now. Just chat nicely with the user!"
 
     messages = [SystemMessage(content=system_prompt)] + state["messages"]
     logger.debug("Invoking final response LLM...")
@@ -183,9 +214,14 @@ def generate_response(state: OrchestratorState) -> dict[str, Any]:
     for resp_key in agent_responses:
         agent_responses[resp_key].processed = True
 
+    intents = state.get("intents", [])
+    for booking in confirmed_bookings:
+        booking.acknowledged = True
+
     return {
         "messages": [response],
-        "agent_responses": agent_responses
+        "agent_responses": agent_responses,
+        "intents": intents
     }
 
 

@@ -1,5 +1,7 @@
 from typing import List, Dict, Any, Optional
 
+from agents.flight_agent.schemas import FlightDetails
+
 MOCK_FLIGHT_DB = [
     {
         "flight_number": "JL712",
@@ -41,7 +43,7 @@ def search_flights(
         return_date: Optional[str] = None,
         passengers: int = 1,
         cabin_class: str = "economy"
-) -> List[Dict[str, Any]]:
+) -> List[FlightDetails]:
     """
     Simulates querying a flight database.
     Filters primarily by origin, destination, and cabin class.
@@ -54,7 +56,7 @@ def search_flights(
             booked_flight = flight.copy()
             booked_flight["departure_date"] = departure_date
             booked_flight["total_price_usd"] = flight["price_usd"] * passengers
-
-            results.append(booked_flight)
+            validated_result = FlightDetails(**booked_flight)
+            results.append(validated_result)
 
     return results
