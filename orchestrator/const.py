@@ -3,19 +3,19 @@ from agents.hotel_agent.agent import hotel_agent_graph
 from orchestrator.enums import IntentType
 
 REQUIRED_FIELDS_BY_INTENT: dict[IntentType, list[str]] = {
-    IntentType.FLIGHT : [],
-    IntentType.HOTEL: []
+    IntentType.FLIGHT : ["origin","destination","departure_date"],
+    IntentType.HOTEL: ["destination_city","check_in_date","check_out_date"]
 }
 
 AGENT_REGISTRY = {
     IntentType.FLIGHT: {
         "graph": flight_agent_graph,
-        "name": "flight_agent",
+        "name": "call_flight_agent",
         "task_type": "flight_search"
     },
     IntentType.HOTEL: {
         "graph": hotel_agent_graph,
-        "name": "hotel_agent",
+        "name": "call_hotel_agent",
         "task_type": "hotel_search"
     }
 }

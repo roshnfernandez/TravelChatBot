@@ -17,7 +17,7 @@ class Intent(BaseModel):
     created_on: datetime = Field(default_factory=datetime.now, description="The date the intent was created.")
 
 class FlightIntent(Intent):
-    intent_type: IntentType.FLIGHT = IntentType.FLIGHT
+    intent_type: IntentType = IntentType.FLIGHT
     origin: Optional[str] = Field(None, description="The origin of the flight.")
     destination: Optional[str] = Field(None, description="The destination of the flight.")
     departure_date: Optional[str] = Field(None, description="The departure date.")
@@ -33,7 +33,7 @@ class FlightIntent(Intent):
         return v
 
 class HotelIntent(Intent):
-    intent_type: IntentType.HOTEL = IntentType.HOTEL
+    intent_type: IntentType = IntentType.HOTEL
     destination_city: Optional[str] = Field(None, description="The destination city.")
     check_in_date: Optional[str] = Field(None, description="The check-in date.")
     check_out_date: Optional[str] = Field(None, description="The check-out date.")
@@ -44,8 +44,8 @@ class HotelIntent(Intent):
     @field_validator('intent_type')
     @classmethod
     def enforce_flight(cls, v):
-        if v != IntentType.FLIGHT:
-            raise ValueError("intent_type must be FLIGHT")
+        if v != IntentType.HOTEL:
+            raise ValueError("intent_type must be HOTEL")
         return v
 
 class AgentTask(BaseModel):

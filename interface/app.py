@@ -1,3 +1,4 @@
+import logging
 import sys
 import os
 import uuid
@@ -11,6 +12,8 @@ from langchain_core.messages import HumanMessage, AIMessage
 from orchestrator.agent import orchestrator_graph
 
 load_dotenv()
+logging.basicConfig(level=logging.DEBUG, format='%(levelname)s [%(name)s] - %(message)s')
+logger = logging.getLogger(__name__)
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Travel Assistant", layout="centered")
@@ -64,4 +67,4 @@ if prompt := st.chat_input("E.g., I need a flight to Tokyo on June 15th..."):
 
         except Exception as e:
             st.error("Oops! Something went wrong behind the scenes.")
-            st.exception(e)
+            logger.error(e)

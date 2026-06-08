@@ -1,3 +1,4 @@
+import copy
 import json
 import logging
 import uuid
@@ -16,27 +17,28 @@ logger = logging.getLogger(__name__)
 
 def parse_intent(state: OrchestratorState) -> dict:
     """Uses an LLM to analyze the conversation and extract structured intent/parameters."""
+    logger.info("--- NODE: PARSE INTENT ---")
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     structured_llm = llm.with_structured_output(IntentExtraction, method="function_calling")
     system_prompt: str = INTENT_PARSER_SYSTEM_PROMPT
     invalid_active_intents = [intent for intent in  state.get("intents", []) if intent.active and intent.status == IntentStatus.INVALID]
     if invalid_active_intents:
+        logger.debug(f"Injecting {len(invalid_active_intents)} invalid/incomplete intents into context.")
         system_prompt += "### PREVIOUS UNFILLED INTENTS ###\n"
         for ints in invalid_active_intents:
-            system_prompt+=(
-                "```json```"
-                f"\n{ints.model_dump_json(exclude_none=True)}\n"
-                "```json```"
-            )
-    # Pass the system prompt and the conversation history
+            system_prompt += f"```json\n{ints.model_dump_json(exclude_none=True)}\n```\n"
+
     messages = [SystemMessage(content=system_prompt)] + state["messages"]
+    logger.debug("Invoking LLM for structured intent extraction...")
     intent_wrapper: IntentExtraction = structured_llm.invoke(messages)
     intents: list[HotelIntent | FlightIntent] = intent_wrapper.extracted_intents
 
     return {"intents": intents}
 
+#TODO: Add better router
 def validate_unprocessed_intents(state: OrchestratorState) -> dict:
-    for intent in state.get("intents", []):
+    logger.info("--- NODE: VALIDATE INTENTS ---")
+    for intent in state["intents"]:
         if intent.status in [IntentStatus.NEW, IntentStatus.MODIFIED]:
             intent.missing_info = []
             fields_to_look_for: list[str] = REQUIRED_FIELDS_BY_INTENT[intent.intent_type]
@@ -44,17 +46,26 @@ def validate_unprocessed_intents(state: OrchestratorState) -> dict:
             for field in fields_to_look_for:
                 if getattr(intent, field, None) is None:
                     intent.missing_info.append(field)
-            intent.status = IntentStatus.INVALID if intent.missing_info else IntentStatus.VALID
-    return {"intents": state.get("intents", [])}
+
+            if intent.missing_info:
+                intent.status = IntentStatus.INVALID
+                logger.warning(f"Intent {intent.intent_type} is INVALID. Missing fields: {intent.missing_info}")
+            else:
+                intent.status = IntentStatus.VALID
+                logger.info(f"Intent {intent.intent_type} is VALID. Ready for delegation.")
+
+    return {}
 
 
 def call_flight_agent(state: OrchestratorState):
     """Explicit node for Flight Agent delegation."""
+    logger.info("--- NODE: CALL FLIGHT AGENT ---")
     return _invoke_agent(state, IntentType.FLIGHT)
 
 
 def call_hotel_agent(state: OrchestratorState):
     """Explicit node for Hotel Agent delegation."""
+    logger.info("--- NODE: CALL HOTEL AGENT ---")
     return _invoke_agent(state, IntentType.HOTEL)
 
 
@@ -77,16 +88,25 @@ def _invoke_agent(state: OrchestratorState, target_intent_type: IntentType):
             "parameters": intent.model_dump(exclude=INTENT_META_DATA_FIELDS)
         }
 
+        logger.debug(f"A2A Request Payload for {agent_config['name']}: {json.dumps(req_payload)}")
+
         # Invoke the sub-graph
         result = agent_config["graph"].invoke({"request": req_payload})
         response_data = result.get("response", {})
+
+        logger.debug(f"A2A Response Data from {agent_config['name']}: {json.dumps(response_data)}")
+
         status = response_data.get("status")
         if status in ["failed", "needs_clarification"]:
             intent.status = IntentStatus.INVALID
-            # Save the error so the LLM knows what to ask the user
             error_msg = response_data.get("clarification_needed") or response_data.get("error") or "Unknown error."
+
+            logger.warning(f"{agent_config['name']} returned {status}: {error_msg}")
+
             if error_msg not in intent.missing_info:
                 intent.missing_info.append(f"Agent Error: {error_msg}")
+        else:
+            logger.info(f"{agent_config['name']} executed successfully.")
 
         # Record the task
         new_agent_responses[task_id] = AgentTask(
@@ -99,6 +119,7 @@ def _invoke_agent(state: OrchestratorState, target_intent_type: IntentType):
 
     return {"agent_responses": new_agent_responses, "intents": state.get("intents", [])}
 
+
 def delegate_to_agents(state: OrchestratorState) -> list[str]:
     """
     Returns a list of nodes to execute in parallel.
@@ -107,25 +128,25 @@ def delegate_to_agents(state: OrchestratorState) -> list[str]:
     routes = []
     for intent in state.get("intents", []):
         if intent.status == IntentStatus.VALID and intent.active:
-            if intent.intent_type == IntentType.FLIGHT:
-                routes.append("call_flight_agent")
-            elif intent.intent_type == IntentType.HOTEL:
-                routes.append("call_hotel_agent")
+            logger.info("Intent Type is {}", intent.intent_type)
+            if intent.intent_type in AGENT_REGISTRY:
+                routes.append(AGENT_REGISTRY[intent.intent_type]["name"])
 
-    # Deduplicate in case there are multiple of the same type
     routes = list(set(routes))
 
-    # If no valid active intents, go straight to chatting (Neither)
     if not routes:
+        logger.info("ROUTER: No valid agents to call. Routing to generate_response.")
         return ["generate_response"]
 
+    logger.info(f"ROUTER: Delegating to agents -> {routes}")
     return routes
+
 
 def generate_response(state: OrchestratorState) -> dict[str, Any]:
     """Generates the final conversational response based on valid agent executions and missing info."""
+    logger.info("--- NODE: GENERATE RESPONSE ---")
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
 
-    #Extract what needs clarification (Active but INVALID)
     missing_details_context = []
     for intent in state.get("intents", []):
         if intent.active and intent.status == IntentStatus.INVALID:
@@ -134,6 +155,9 @@ def generate_response(state: OrchestratorState) -> dict[str, Any]:
             )
 
     agent_results = [json.loads(task.agent_response) for task in state.get("agent_responses", {}).values() if not task.processed]
+
+    logger.debug(
+        f"Formatting {len(agent_results)} agent results and {len(missing_details_context)} clarification points.")
 
     system_prompt = RESPONSE_GENERATOR_SYSTEM_PROMPT
 
@@ -149,9 +173,12 @@ def generate_response(state: OrchestratorState) -> dict[str, Any]:
         system_prompt += "No active bookings right now. Just chat nicely with the user!"
 
     messages = [SystemMessage(content=system_prompt)] + state["messages"]
+    logger.debug("Invoking final response LLM...")
     response = llm.invoke(messages)
 
-    #Mark agent responses as processed
+    logger.info("Response generated successfully.")
+
+    # Mark agent responses as processed
     agent_responses = state.get("agent_responses", {})
     for resp_key in agent_responses:
         agent_responses[resp_key].processed = True
@@ -162,16 +189,15 @@ def generate_response(state: OrchestratorState) -> dict[str, Any]:
     }
 
 
-workflow = StateGraph(state_schema=OrchestratorState) #type:ignore
+workflow = StateGraph(state_schema=OrchestratorState)  # type:ignore
 
-workflow.add_node("parse", parse_intent) #type:ignore
-workflow.add_node("validate", validate_unprocessed_intents) #type:ignore
-workflow.add_node("call_flight_agent", call_flight_agent) #type:ignore
-workflow.add_node("call_hotel_agent", call_hotel_agent) #type:ignore
-workflow.add_node("generate_response", generate_response) #type:ignore
+workflow.add_node("parse", parse_intent)  # type:ignore
+workflow.add_node("validate", validate_unprocessed_intents)  # type:ignore
+workflow.add_node("call_flight_agent", call_flight_agent)  # type:ignore
+workflow.add_node("call_hotel_agent", call_hotel_agent)  # type:ignore
+workflow.add_node("generate_response", generate_response)  # type:ignore
 
 workflow.set_entry_point("parse")
-
 workflow.add_edge("parse", "validate")
 
 workflow.add_conditional_edges(
