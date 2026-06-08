@@ -125,6 +125,15 @@ Keep the summary concise and to the point. Only include relevant information.
 
 def get_parse_intent_system_prompt(state: OrchestratorState) -> str:
     system_prompt: str = _INTENT_PARSER_SYSTEM_PROMPT
+
+    if state.get("summary",None):
+        system_prompt += "### SUMMARY OF OLDER MESSAGES ###\n"
+        system_prompt += f"{state['summary']}\n"
+
+    if state.get("task_responses_summary",None):
+        system_prompt += "### SUMMARY OF OLDER AGENT SEARCH RESULTS ###\n"
+        system_prompt += f"{state['task_responses_summary']}\n"
+
     invalid_active_intents = [intent for intent in state.get("intents", []) if
                               intent.active and intent.status == IntentStatus.INVALID]
     valid_active_intents = [intent for intent in state.get("intents", []) if
@@ -157,6 +166,15 @@ def get_parse_intent_system_prompt(state: OrchestratorState) -> str:
 
 def get_response_system_prompt(state: OrchestratorState) -> str:
     system_prompt = _RESPONSE_GENERATOR_SYSTEM_PROMPT
+
+    if state.get("summary", None):
+        system_prompt += "### SUMMARY OF OLDER MESSAGES ###\n"
+        system_prompt += f"{state['summary']}\n"
+
+    if state.get("task_responses_summary", None):
+        system_prompt += "### SUMMARY OF OLDER AGENT SEARCH RESULTS ###\n"
+        system_prompt += f"{state['task_responses_summary']}\n"
+
 
     # 1. Grab Missing Info
     missing_details_context = []
