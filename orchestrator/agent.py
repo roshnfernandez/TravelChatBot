@@ -9,7 +9,7 @@ from langchain_openai import ChatOpenAI
 
 from orchestrator.const import REQUIRED_FIELDS_BY_INTENT, AGENT_REGISTRY, INTENT_META_DATA_FIELDS
 from orchestrator.enums import IntentStatus, IntentType
-from orchestrator.models import OrchestratorState, HotelIntent, FlightIntent, AgentTask
+from orchestrator.models import OrchestratorState, HotelIntent, FlightIntent, AgentTask, IntentExtraction
 from orchestrator.prompts import INTENT_PARSER_SYSTEM_PROMPT, RESPONSE_GENERATOR_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 def parse_intent(state: OrchestratorState) -> dict:
     """Uses an LLM to analyze the conversation and extract structured intent/parameters."""
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-    structured_llm = llm.with_structured_output(list[HotelIntent | FlightIntent])
+    structured_llm = llm.with_structured_output(IntentExtraction, method="function_calling")
     system_prompt: str = INTENT_PARSER_SYSTEM_PROMPT
     invalid_active_intents = [intent for intent in  state.get("intents", []) if intent.active and intent.status == IntentStatus.INVALID]
     if invalid_active_intents:
@@ -30,7 +30,8 @@ def parse_intent(state: OrchestratorState) -> dict:
             )
     # Pass the system prompt and the conversation history
     messages = [SystemMessage(content=system_prompt)] + state["messages"]
-    intents: list[HotelIntent | FlightIntent] = structured_llm.invoke(messages)
+    intent_wrapper: IntentExtraction = structured_llm.invoke(messages)
+    intents: list[HotelIntent | FlightIntent] = intent_wrapper.extracted_intents
 
     return {"intents": intents}
 
